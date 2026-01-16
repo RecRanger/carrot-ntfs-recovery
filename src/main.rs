@@ -2,6 +2,7 @@ mod ntfs_logic;
 
 use anyhow::Result;
 use clap::Parser;
+use log::{debug, info};
 use memmap2::Mmap;
 use std::{
     fs::File,
@@ -23,12 +24,17 @@ struct Cli {
 }
 
 fn main() -> Result<()> {
+    env_logger::init();
+
     let cli = Cli::parse();
 
     let input_file = File::open(&cli.input)?;
+    debug!("Opened input file: {}", &cli.input);
     // Advisory lock - prevents writes by cooperating processes.
     // Reduces a risk from unsafe mmap (e.g., if file is shortened or deleted during operation).
     input_file.lock_shared()?;
+    debug!("Locked input file: {}", &cli.input);
+
     let disk_image_buffer_mmap = unsafe { Mmap::map(&input_file)? };
 
     let output_file = File::create(&cli.output)?;
@@ -36,20 +42,24 @@ fn main() -> Result<()> {
 
     let mut file_count: u64 = 0;
 
+    info!("Starting to process NTFS image's file entries.");
+
     for ntfs_output_entry in scan_ntfs_image(&disk_image_buffer_mmap) {
         let json = serde_json::to_string(&ntfs_output_entry)?;
         writeln!(output_file_writer, "{json}")?;
         file_count += 1;
 
         if file_count % 1000 == 0 {
-            eprintln!(
-                "Processed {} files. Last file position: {} = {:.3} GiB",
+            info!(
+                "Processed {} file entries. Last file position: {} = {:.3} GiB",
                 file_count,
                 ntfs_output_entry.mft_offset,
                 (ntfs_output_entry.mft_offset as f64 / (1024.0 * 1024.0 * 1024.0))
             );
         }
     }
+
+    info!("Processed a total of {} file entries.", file_count);
 
     Ok(())
 }

@@ -1,5 +1,7 @@
-use serde::Serialize;
 use chrono::{DateTime, TimeZone, Utc};
+use log::info;
+use serde::Serialize;
+use std::time::{Duration, Instant};
 
 const MFT_MAGIC: &[u8; 4] = b"FILE";
 
@@ -96,11 +98,11 @@ pub struct NtfsEntry {
     pub hardlink_count: u16,
     pub is_in_use: bool,
     pub is_directory: bool,
-    
+
     // Main filename (Win32/POSIX)
     pub filename: String,
-    pub parent_mft_record: u64,  // MFT record number of parent directory
-    pub parent_sequence: u16,     // Sequence number of parent
+    pub parent_mft_record: u64, // MFT record number of parent directory
+    pub parent_sequence: u16,   // Sequence number of parent
     pub allocated_size: u64,
     pub real_size: u64,
 
@@ -109,10 +111,10 @@ pub struct NtfsEntry {
     pub modified: Option<DateTime<Utc>>,
     pub mft_modified: Option<DateTime<Utc>>,
     pub accessed: Option<DateTime<Utc>>,
-    
+
     // File attributes
     pub file_attributes: Option<FileAttributes>,
-    
+
     // Security and ownership
     pub owner_id: Option<u32>,
     pub security_id: Option<u32>,
@@ -120,17 +122,17 @@ pub struct NtfsEntry {
 
     // Object ID (GUID)
     pub object_id: Option<String>,
-    
+
     // Alternate filenames (DOS names, other namespaces)
     pub alternate_filenames: Vec<AlternateFilename>,
-    
+
     // Data streams (unnamed + named)
     pub data_streams: Vec<DataStream>,
-    
+
     // Reparse point
     pub reparse_tag: Option<u32>,
     pub reparse_target: Option<String>,
-    
+
     // Extended attributes
     pub has_extended_attributes: bool,
 }
@@ -153,7 +155,7 @@ fn parse_attr_header(buf: &[u8], offset: usize) -> Option<(u32, usize, bool, Opt
     let non_resident = buf[offset + 8] != 0;
     let name_length = buf[offset + 9] as usize;
     let name_offset = u16::from_le_bytes(buf[offset + 10..offset + 12].try_into().ok()?) as usize;
-    
+
     let attr_name = if name_length > 0 && offset + name_offset + name_length * 2 <= buf.len() {
         let name_bytes = &buf[offset + name_offset..offset + name_offset + name_length * 2];
         let utf16: Vec<u16> = name_bytes
@@ -238,43 +240,43 @@ fn parse_data_runs(attr: &[u8]) -> Option<Vec<DataRun>> {
     if attr.len() < 64 {
         return None;
     }
-    
+
     let data_run_offset = u16::from_le_bytes(attr[32..34].try_into().ok()?) as usize;
-    
+
     if data_run_offset >= attr.len() {
         return None;
     }
-    
+
     let mut runs = Vec::new();
     let mut offset = data_run_offset;
     let mut current_lcn: i64 = 0; // Logical Cluster Number (cumulative)
-    
+
     while offset < attr.len() {
         let header = attr[offset];
         if header == 0 {
             break; // End of data runs
         }
-        
+
         let length_bytes = (header & 0x0F) as usize;
         let offset_bytes = ((header & 0xF0) >> 4) as usize;
-        
+
         if length_bytes == 0 || length_bytes > 8 || offset_bytes > 8 {
             break;
         }
-        
+
         offset += 1;
-        
+
         if offset + length_bytes + offset_bytes > attr.len() {
             break;
         }
-        
+
         // Read cluster count (unsigned)
         let mut cluster_count: u64 = 0;
         for i in 0..length_bytes {
             cluster_count |= (attr[offset + i] as u64) << (i * 8);
         }
         offset += length_bytes;
-        
+
         // Read cluster offset (signed, relative to previous LCN)
         let mut cluster_offset: i64 = 0;
         for i in 0..offset_bytes {
@@ -287,23 +289,23 @@ fn parse_data_runs(attr: &[u8]) -> Option<Vec<DataRun>> {
             }
         }
         offset += offset_bytes;
-        
+
         current_lcn += cluster_offset;
-        
+
         runs.push(DataRun {
             cluster_offset: current_lcn,
             cluster_count,
         });
     }
-    
-    if runs.is_empty() {
-        None
-    } else {
-        Some(runs)
-    }
+
+    if runs.is_empty() { None } else { Some(runs) }
 }
 
-fn parse_data_attribute(attr: &[u8], attr_name: Option<String>, non_resident: bool) -> Option<DataStream> {
+fn parse_data_attribute(
+    attr: &[u8],
+    attr_name: Option<String>,
+    non_resident: bool,
+) -> Option<DataStream> {
     if non_resident {
         if attr.len() < 64 {
             return None;
@@ -311,7 +313,7 @@ fn parse_data_attribute(attr: &[u8], attr_name: Option<String>, non_resident: bo
         let real_size = u64::from_le_bytes(attr[48..56].try_into().ok()?);
         let allocated_size = u64::from_le_bytes(attr[56..64].try_into().ok()?);
         let data_runs = parse_data_runs(attr);
-        
+
         Some(DataStream {
             name: attr_name,
             resident: false,
@@ -324,7 +326,7 @@ fn parse_data_attribute(attr: &[u8], attr_name: Option<String>, non_resident: bo
         let data = parse_resident_data(attr)?;
         let size = data.len() as u64;
         let resident_str = String::from_utf8(data).ok();
-        
+
         Some(DataStream {
             name: attr_name,
             resident: true,
@@ -350,7 +352,18 @@ fn filetime_to_utc(ft: u64) -> Option<DateTime<Utc>> {
     Utc.timestamp_opt(seconds, nanos).single()
 }
 
-fn parse_standard_information(attr: &[u8]) -> Option<(DateTime<Utc>, DateTime<Utc>, DateTime<Utc>, DateTime<Utc>, FileAttributes, Option<u32>, Option<u32>, Option<u64>)> {
+fn parse_standard_information(
+    attr: &[u8],
+) -> Option<(
+    DateTime<Utc>,
+    DateTime<Utc>,
+    DateTime<Utc>,
+    DateTime<Utc>,
+    FileAttributes,
+    Option<u32>,
+    Option<u32>,
+    Option<u64>,
+)> {
     let content_offset = u16::from_le_bytes(attr[20..22].try_into().ok()?) as usize;
 
     if content_offset + 48 > attr.len() {
@@ -363,71 +376,93 @@ fn parse_standard_information(attr: &[u8]) -> Option<(DateTime<Utc>, DateTime<Ut
     let modified = filetime_to_utc(u64::from_le_bytes(c[8..16].try_into().ok()?))?;
     let mft_modified = filetime_to_utc(u64::from_le_bytes(c[16..24].try_into().ok()?))?;
     let accessed = filetime_to_utc(u64::from_le_bytes(c[24..32].try_into().ok()?))?;
-    
+
     let flags = u32::from_le_bytes(c[32..36].try_into().ok()?);
     let file_attrs = FileAttributes::from_flags(flags);
-    
+
     // Extended fields (NTFS 3.0+)
     let owner_id = if c.len() >= 56 {
         Some(u32::from_le_bytes(c[48..52].try_into().ok()?))
     } else {
         None
     };
-    
+
     let security_id = if c.len() >= 56 {
         Some(u32::from_le_bytes(c[52..56].try_into().ok()?))
     } else {
         None
     };
-    
+
     let usn = if c.len() >= 72 {
         Some(u64::from_le_bytes(c[64..72].try_into().ok()?))
     } else {
         None
     };
 
-    Some((created, modified, mft_modified, accessed, file_attrs, owner_id, security_id, usn))
+    Some((
+        created,
+        modified,
+        mft_modified,
+        accessed,
+        file_attrs,
+        owner_id,
+        security_id,
+        usn,
+    ))
 }
 
 fn parse_object_id(attr: &[u8]) -> Option<String> {
     let content_offset = u16::from_le_bytes(attr[20..22].try_into().ok()?) as usize;
-    
+
     if content_offset + 16 > attr.len() {
         return None;
     }
-    
+
     let guid_bytes = &attr[content_offset..content_offset + 16];
-    
+
     Some(format!(
         "{:02x}{:02x}{:02x}{:02x}-{:02x}{:02x}-{:02x}{:02x}-{:02x}{:02x}-{:02x}{:02x}{:02x}{:02x}{:02x}{:02x}",
-        guid_bytes[3], guid_bytes[2], guid_bytes[1], guid_bytes[0],
-        guid_bytes[5], guid_bytes[4],
-        guid_bytes[7], guid_bytes[6],
-        guid_bytes[8], guid_bytes[9],
-        guid_bytes[10], guid_bytes[11], guid_bytes[12], guid_bytes[13], guid_bytes[14], guid_bytes[15]
+        guid_bytes[3],
+        guid_bytes[2],
+        guid_bytes[1],
+        guid_bytes[0],
+        guid_bytes[5],
+        guid_bytes[4],
+        guid_bytes[7],
+        guid_bytes[6],
+        guid_bytes[8],
+        guid_bytes[9],
+        guid_bytes[10],
+        guid_bytes[11],
+        guid_bytes[12],
+        guid_bytes[13],
+        guid_bytes[14],
+        guid_bytes[15]
     ))
 }
 
 fn parse_reparse_point(attr: &[u8]) -> Option<(u32, Option<String>)> {
     let content_offset = u16::from_le_bytes(attr[20..22].try_into().ok()?) as usize;
-    
+
     if content_offset + 8 > attr.len() {
         return None;
     }
-    
+
     let content = &attr[content_offset..];
     let tag = u32::from_le_bytes(content[0..4].try_into().ok()?);
-    
+
     // Parse symlink/junction target for common reparse points
     let target = if tag == 0xA000000C || tag == 0xA0000003 {
         if content.len() >= 20 {
-            let substitute_name_offset = u16::from_le_bytes(content[8..10].try_into().ok()?) as usize;
-            let substitute_name_length = u16::from_le_bytes(content[10..12].try_into().ok()?) as usize;
-            
+            let substitute_name_offset =
+                u16::from_le_bytes(content[8..10].try_into().ok()?) as usize;
+            let substitute_name_length =
+                u16::from_le_bytes(content[10..12].try_into().ok()?) as usize;
+
             let path_buffer_offset = 20;
             let start = path_buffer_offset + substitute_name_offset;
             let end = start + substitute_name_length;
-            
+
             if end <= content.len() {
                 let utf16: Vec<u16> = content[start..end]
                     .chunks_exact(2)
@@ -443,11 +478,15 @@ fn parse_reparse_point(attr: &[u8]) -> Option<(u32, Option<String>)> {
     } else {
         None
     };
-    
+
     Some((tag, target))
 }
 
-fn parse_ntfs_record(disk_image_buffer: &[u8], current_idx: usize, record_size: usize) -> Option<NtfsEntry> {
+fn parse_ntfs_record(
+    disk_image_buffer: &[u8],
+    current_idx: usize,
+    record_size: usize,
+) -> Option<NtfsEntry> {
     if &disk_image_buffer[current_idx..current_idx + 4] != MFT_MAGIC {
         return None;
     }
@@ -464,14 +503,14 @@ fn parse_ntfs_record(disk_image_buffer: &[u8], current_idx: usize, record_size: 
     let first_attr_offset = u16::from_le_bytes(record[20..22].try_into().unwrap()) as usize;
     let flags = u16::from_le_bytes(record[22..24].try_into().unwrap());
     let mft_record_number = u32::from_le_bytes(record[44..48].try_into().unwrap()) as u64;
-    
+
     let is_in_use = flags & 0x01 != 0;
     let is_directory = flags & 0x02 != 0;
 
     let mut offset = first_attr_offset;
     let mut all_filenames = Vec::new();
     let mut data_streams = Vec::new();
-    
+
     let mut created = None;
     let mut modified = None;
     let mut mft_modified = None;
@@ -501,7 +540,9 @@ fn parse_ntfs_record(disk_image_buffer: &[u8], current_idx: usize, record_size: 
             }
             ATTR_STANDARD_INFORMATION => {
                 if created.is_none() {
-                    if let Some((c, m, mm, a, attrs, oid, sid, u)) = parse_standard_information(attr) {
+                    if let Some((c, m, mm, a, attrs, oid, sid, u)) =
+                        parse_standard_information(attr)
+                    {
                         created = Some(c);
                         modified = Some(m);
                         mft_modified = Some(mm);
@@ -540,18 +581,21 @@ fn parse_ntfs_record(disk_image_buffer: &[u8], current_idx: usize, record_size: 
     }
 
     // Find main filename (prefer Win32/POSIX, not DOS)
-    let main_idx = all_filenames.iter().position(|f| f.namespace == 1 || f.namespace == 3)
+    let main_idx = all_filenames
+        .iter()
+        .position(|f| f.namespace == 1 || f.namespace == 3)
         .or_else(|| all_filenames.iter().position(|f| f.namespace == 0))
         .unwrap_or(0);
 
     let main = all_filenames.remove(main_idx);
-    
+
     // Extract parent MFT record and sequence from the 48-bit reference
     let parent_mft_record = main.parent_reference & 0x0000_FFFF_FFFF_FFFF;
     let parent_sequence = ((main.parent_reference >> 48) & 0xFFFF) as u16;
-    
+
     // Convert remaining to alternate filenames
-    let alternate_filenames = all_filenames.into_iter()
+    let alternate_filenames = all_filenames
+        .into_iter()
         .map(|f| AlternateFilename {
             name: f.name,
             namespace: f.namespace,
@@ -589,8 +633,20 @@ fn parse_ntfs_record(disk_image_buffer: &[u8], current_idx: usize, record_size: 
 
 pub fn scan_ntfs_image(disk_image_buffer: &[u8]) -> impl Iterator<Item = NtfsEntry> + '_ {
     let record_size = 1024;
+    let mut last_log = Instant::now();
 
     (0..disk_image_buffer.len().saturating_sub(4))
         .step_by(8)
+        .inspect(move |i| {
+            let now = Instant::now();
+            if now.duration_since(last_log) >= Duration::from_secs(30) {
+                info!(
+                    "Total processed: {} bytes = {:3} GiB",
+                    i,
+                    ((*i as f64) / (1024.0 * 1024.0 * 1024.0))
+                );
+                last_log = now;
+            }
+        })
         .filter_map(move |i| parse_ntfs_record(disk_image_buffer, i, record_size))
 }
