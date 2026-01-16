@@ -633,19 +633,24 @@ fn parse_ntfs_record(
 
 pub fn scan_ntfs_image(disk_image_buffer: &[u8]) -> impl Iterator<Item = NtfsEntry> + '_ {
     let record_size = 1024;
+
+    // Track logs.
     let mut last_log = Instant::now();
+    let mut count = 0u64;
 
     (0..disk_image_buffer.len().saturating_sub(4))
         .step_by(8)
         .inspect(move |i| {
-            let now = Instant::now();
-            if now.duration_since(last_log) >= Duration::from_secs(30) {
+            count += 1;
+            
+            // Fetching the current time is expensive, so we only check it every 100k iterations.
+            if (count % 100_000 == 0) && (Instant::now().duration_since(last_log) >= Duration::from_secs(30)) {
                 info!(
-                    "Total processed: {} bytes = {:3} GiB",
+                    "Total processed: {} bytes = {:.3} GiB",
                     i,
                     ((*i as f64) / (1024.0 * 1024.0 * 1024.0))
                 );
-                last_log = now;
+                last_log = Instant::now();
             }
         })
         .filter_map(move |i| parse_ntfs_record(disk_image_buffer, i, record_size))
