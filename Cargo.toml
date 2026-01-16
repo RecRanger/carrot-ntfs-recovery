@@ -1,5 +1,5 @@
 [package]
-name = "ntfs-corrupt-file-lister"
+name = "carrot-ntfs-recovery"
 version = "0.1.0"
 edition = "2024"
 description = "NTFS filesystem recovery/forensics tool"

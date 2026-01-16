@@ -80,6 +80,18 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "5dd9dc738b7a8311c7ade152424974d8115f2cdad61e8dab8dac9f2362298510"
 
 [[package]]
+name = "carrot-ntfs-recovery"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "chrono",
+ "clap",
+ "memmap2",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "cc"
 version = "1.2.52"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -244,18 +256,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "744133e4a0e0a658e1374cf3bf8e415c4052a15a111acd372764c55b4177d490"
 dependencies = [
  "libc",
-]
-
-[[package]]
-name = "ntfs-corrupt-file-lister"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "chrono",
- "clap",
- "memmap2",
- "serde",
- "serde_json",
 ]
 
 [[package]]
