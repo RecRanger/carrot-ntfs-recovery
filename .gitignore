@@ -1,0 +1,5 @@
+/target
+
+# Ignore test data.
+*.ndjson
+*.img
