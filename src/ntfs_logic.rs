@@ -1,7 +1,6 @@
 use chrono::{DateTime, TimeZone, Utc};
-use log::info;
+use indicatif::{ProgressBar, ProgressDrawTarget, ProgressStyle};
 use serde::Serialize;
-use std::time::{Duration, Instant};
 
 const MFT_MAGIC: &[u8; 4] = b"FILE";
 
@@ -634,24 +633,23 @@ fn parse_ntfs_record(
 pub fn scan_ntfs_image(disk_image_buffer: &[u8]) -> impl Iterator<Item = NtfsEntry> + '_ {
     let record_size = 1024;
 
-    // Track logs.
-    let mut last_log = Instant::now();
-    let mut count = 0u64;
+    // Create progress bar.
+    let progress_bar = ProgressBar::new(disk_image_buffer.len() as u64);
+    progress_bar.set_style(
+        ProgressStyle::default_bar()
+            .template("{spinner:.green} [{elapsed_precise}] [{bar:40.cyan/blue}] {bytes}/{total_bytes} ({binary_bytes_per_sec}) - ETA {eta}")
+            .unwrap()
+            .progress_chars("#>-"),
+    );
+    if disk_image_buffer.len() < 5_000_000 {
+        // Hide the progress bar on small datasets. Important for keeping test output clean.
+        progress_bar.set_draw_target(ProgressDrawTarget::hidden());
+    }
 
     (0..disk_image_buffer.len().saturating_sub(4))
         .step_by(8)
         .inspect(move |i| {
-            count += 1;
-            
-            // Fetching the current time is expensive, so we only check it every 100k iterations.
-            if (count % 100_000 == 0) && (Instant::now().duration_since(last_log) >= Duration::from_secs(30)) {
-                info!(
-                    "Total processed: {} bytes = {:.3} GiB",
-                    i,
-                    ((*i as f64) / (1024.0 * 1024.0 * 1024.0))
-                );
-                last_log = Instant::now();
-            }
+            progress_bar.set_position(*i as u64);
         })
         .filter_map(move |i| parse_ntfs_record(disk_image_buffer, i, record_size))
 }
