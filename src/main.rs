@@ -37,6 +37,10 @@ fn main() -> Result<()> {
 
     let disk_image_buffer_mmap = unsafe { Mmap::map(&input_file)? };
 
+    // Optimization: Inform the kernel that it's fine to dump old pages after we're past,
+    // and that we'll be requesting forward-looking pages continuously.
+    disk_image_buffer_mmap.advise(memmap2::Advice::Sequential)?;
+
     let output_file = File::create(&cli.output)?;
     let mut output_file_writer = BufWriter::new(output_file);
 
